@@ -313,16 +313,6 @@ body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--tex
 
   <div class="content-wrap">
     <div class="main-col">
-      <div class="setup-banner" id="setup-banner" style="display:none">
-        <button class="dismiss" onclick="document.getElementById('setup-banner').style.display='none'" aria-label="閉じる">×</button>
-        <h4><i class="fa-solid fa-triangle-exclamation"></i> Custom Search APIを有効にしてください</h4>
-        <ol>
-          <li><a href="https://console.cloud.google.com/apis/library/customsearch.googleapis.com" target="_blank">Google Cloud Console</a> を開く</li>
-          <li>「Custom Search API」を <strong>有効にする</strong></li>
-          <li>同じAPIキー（<code>AIzaSy…YY</code>）が使えます</li>
-          <li>有効化後、ページをリロードして再検索</li>
-        </ol>
-      </div>
       <div class="error-box" id="err"></div>
       <div class="loading" id="ld"><span class="spinner"></span>検索中...</div>
       <p class="rc" id="rc"></p>
@@ -340,8 +330,6 @@ body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--tex
 </div>
 
 <script>
-const AK = 'AIzaSyD3eVIp4pEzE-qd9ePwuUOiJztr4KSKKpU';
-const CX = '93c15368aad914e3e';
 let cQ = '', cT = 'web', sIdx = 1;
 let recognition = null;
 let voiceTarget = 'home';
@@ -496,6 +484,21 @@ function showAiTab(q) {
   rc.textContent = 'AIが回答を生成中...';
 }
 
+// SearXNG public instances (fallback list)
+const SEARX_INSTANCES = [
+  'https://searx.be',
+  'https://search.sapti.me',
+  'https://searxng.world',
+  'https://searx.tiekoetter.com',
+];
+let searxIdx = 0;
+
+function searxUrl(q, tab, page) {
+  const base = SEARX_INSTANCES[searxIdx % SEARX_INSTANCES.length];
+  const cat = tab === 'news' ? 'news' : tab === 'images' ? 'images' : tab === 'videos' ? 'videos' : 'general';
+  return `${base}/search?q=${encodeURIComponent(q)}&categories=${cat}&language=ja&pageno=${page}&format=json`;
+}
+
 // search
 function go(q) {
   q = q.trim();
@@ -515,20 +518,41 @@ function go(q) {
   fetch_(q, 'web', 1, false);
 }
 
-function fetch_(q, tab, start, append) {
+function fetch_(q, tab, page, append) {
   err.className = 'error-box'; ld.className = 'loading show';
   if (!append) { rl.innerHTML = ''; rc.textContent = ''; }
-  let url;
-  if (tab === 'web')     url = `https://www.googleapis.com/customsearch/v1?key=${AK}&cx=${CX}&q=${encodeURIComponent(q)}&start=${start}&lr=lang_ja&gl=jp&num=10`;
-  else if (tab === 'news')    url = `https://www.googleapis.com/customsearch/v1?key=${AK}&cx=${CX}&q=${encodeURIComponent(q)}&tbm=nws&start=${start}&num=10`;
-  else if (tab === 'images')  url = `https://www.googleapis.com/customsearch/v1?key=${AK}&cx=${CX}&q=${encodeURIComponent(q)}&searchType=image&start=${start}&num=9`;
-  else url = `https://www.googleapis.com/customsearch/v1?key=${AK}&cx=${CX}&q=${encodeURIComponent(q)}+site:youtube.com OR site:nicovideo.jp&start=${start}&num=8`;
 
-  fetch(url).then(r => r.json()).then(d => {
-    ld.className = 'loading';
-    if (d.error) {
-      const isAccess = d.error.message && d.error.message.includes('access');
-      if (isAccess) {
+  const url = searxUrl(q, tab, page);
+
+  fetch(url, { headers: { 'Accept': 'application/json' } })
+    .then(r => { if (!r.ok) throw new Error('status ' + r.status); return r.json(); })
+    .then(d => {
+      ld.className = 'loading';
+      const items = d.results || [];
+      if (!items.length) {
+        if (!append) {
+          // try next instance
+          searxIdx++;
+          if (searxIdx < SEARX_INSTANCES.length) { fetch_(q, tab, page, append); return; }
+          showErr('検索結果が見つかりませんでした。しばらく待ってから再試行してください。');
+        }
+        mb.style.display = 'none'; return;
+      }
+      searxIdx = 0;
+      if (!append) rc.textContent = `${items.length} 件以上の結果`;
+      if (tab === 'web' || tab === 'news') rweb(items, tab);
+      else if (tab === 'images') rimg(items, append);
+      else rvid(items, append);
+      mb.style.display = items.length >= 10 ? 'block' : 'none';
+    })
+    .catch(() => {
+      ld.className = 'loading';
+      searxIdx++;
+      if (searxIdx < SEARX_INSTANCES.length) { fetch_(q, tab, page, append); return; }
+      searxIdx = 0;
+      showErr('検索サーバーに接続できませんでした。しばらく待ってから再試行してください。');
+    });
+}      if (isAccess) {
         document.getElementById('setup-banner').style.display = 'block';
         showErr('Custom Search APIが有効化されていません。上の手順に従って有効化してください。');
       } else {
@@ -536,60 +560,48 @@ function fetch_(q, tab, start, append) {
       }
       return;
     }
-    if (!d.items || !d.items.length) {
-      if (!append) showErr('「' + q + '」の結果が見つかりませんでした。');
-      mb.style.display = 'none'; return;
-    }
-    if (!append && d.searchInformation) {
-      const tot = Math.round(d.searchInformation.totalResults).toLocaleString();
-      rc.textContent = `約 ${tot} 件（${parseFloat(d.searchInformation.formattedSearchTime)} 秒）`;
-    }
-    if (tab === 'web') rweb(d.items);
-    else if (tab === 'news') rnews(d.items);
-    else if (tab === 'images') rimg(d.items, append);
-    else rvid(d.items, append);
-    mb.style.display = (d.queries && d.queries.nextPage) ? 'block' : 'none';
-  }).catch(() => { ld.className = 'loading'; showErr('ネットワークエラーが発生しました。'); });
-}
+// SearXNG returns results in d.results array
+// each item has: url, title, content, thumbnail, publishedDate, engine
 
-function rweb(items) {
+function rweb(items, tab) {
   items.forEach(it => {
+    if (tab === 'news') { rnewsItem(it); return; }
     const d = document.createElement('div'); d.className = 'r-item';
-    const host = shost(it.link);
+    const host = shost(it.url);
     const fav = `https://www.google.com/s2/favicons?sz=16&domain=${host}`;
     d.innerHTML = `
       <div class="r-breadcrumb">
         <img class="r-favicon" src="${fav}" alt="" onerror="this.style.display='none'">
         <span class="r-url">${host}</span>
       </div>
-      <a class="r-title" href="${it.link}" target="_blank" rel="noopener">${it.htmlTitle || it.title}</a>
-      <div class="r-snippet">${it.htmlSnippet || it.snippet || ''}</div>`;
+      <a class="r-title" href="${it.url}" target="_blank" rel="noopener">${it.title || it.url}</a>
+      <div class="r-snippet">${it.content || ''}</div>`;
     rl.appendChild(d);
   });
 }
 
-function rnews(items) {
-  items.forEach(it => {
-    const d = document.createElement('div'); d.className = 'n-item';
-    const th = it.pagemap?.cse_image?.[0]?.src || '';
-    d.innerHTML = `${th ? `<img class="n-thumb" src="${th}" alt="" onerror="this.style.display='none'">` : '<div class="n-thumb"></div>'}
-      <div class="n-body">
-        <div class="n-src">${it.displayLink || shost(it.link)}</div>
-        <a class="n-title" href="${it.link}" target="_blank" rel="noopener">${it.htmlTitle || it.title}</a>
-        <div class="n-date">${(it.snippet || '').substring(0, 40)}</div>
-      </div>`;
-    rl.appendChild(d);
-  });
+function rnewsItem(it) {
+  const d = document.createElement('div'); d.className = 'n-item';
+  const th = it.thumbnail || it.img_src || '';
+  d.innerHTML = `${th ? `<img class="n-thumb" src="${th}" alt="" onerror="this.style.display='none'">` : '<div class="n-thumb"></div>'}
+    <div class="n-body">
+      <div class="n-src">${shost(it.url)}</div>
+      <a class="n-title" href="${it.url}" target="_blank" rel="noopener">${it.title || ''}</a>
+      <div class="n-date">${it.publishedDate || it.content?.substring(0, 40) || ''}</div>
+    </div>`;
+  rl.appendChild(d);
 }
 
 function rimg(items, append) {
   let g = append ? rl.querySelector('.img-grid') : null;
   if (!g) { g = document.createElement('div'); g.className = 'img-grid'; rl.appendChild(g); }
   items.forEach(it => {
+    const src = it.thumbnail_src || it.img_src || it.url;
+    if (!src) return;
     const c = document.createElement('div'); c.className = 'img-card';
-    c.innerHTML = `<img src="${it.link}" alt="${it.title}" loading="lazy" onerror="this.closest('.img-card').style.display='none'">
-      <div class="img-cap">${it.title}</div>`;
-    c.onclick = () => window.open(it.image?.contextLink || it.link, '_blank');
+    c.innerHTML = `<img src="${src}" alt="${it.title || ''}" loading="lazy" onerror="this.closest('.img-card').style.display='none'">
+      <div class="img-cap">${it.title || ''}</div>`;
+    c.onclick = () => window.open(it.url || src, '_blank');
     g.appendChild(c);
   });
 }
@@ -599,16 +611,16 @@ function rvid(items, append) {
   if (!g) { g = document.createElement('div'); g.className = 'vid-grid'; rl.appendChild(g); }
   items.forEach(it => {
     const c = document.createElement('div'); c.className = 'vid-card';
-    const th = it.pagemap?.cse_image?.[0]?.src || '';
+    const th = it.thumbnail || it.img_src || '';
     c.innerHTML = `<div class="vid-tw">
         ${th ? `<img src="${th}" alt="" style="width:100%;aspect-ratio:16/9;object-fit:cover;display:block;" onerror="this.classList.add('vid-ph')">` : '<div class="vid-ph"></div>'}
         <div class="vid-play"><i class="fa-solid fa-play"></i></div>
       </div>
       <div class="vid-info">
-        <div class="vid-title">${it.title}</div>
-        <div class="vid-meta">${shost(it.link)}</div>
+        <div class="vid-title">${it.title || ''}</div>
+        <div class="vid-meta">${shost(it.url)}</div>
       </div>`;
-    c.onclick = () => window.open(it.link, '_blank');
+    c.onclick = () => window.open(it.url, '_blank');
     g.appendChild(c);
   });
 }
