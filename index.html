@@ -343,20 +343,6 @@ function doAITab(q){
   askAI(q,'res');rc.textContent='AIが回答を生成中...';
 }
 
-// SearXNG
-const INSTANCES=[
-  'https://searx.be',
-  'https://search.sapti.me',
-  'https://searxng.world',
-  'https://searx.tiekoetter.com',
-  'https://priv.au'
-];
-let si=0;
-function surl(q,tab,page){
-  const cat=tab==='news'?'news':tab==='images'?'images':tab==='videos'?'videos':'general';
-  return INSTANCES[si%INSTANCES.length]+'/search?q='+encodeURIComponent(q)+'&categories='+cat+'&language=ja&pageno='+page+'&format=json';
-}
-
 function go(q){
   q=q.trim();
   if(!q){const inp=home.style.display==='none'?rq:hq;inp.style.outline='2px solid var(--orange)';setTimeout(()=>{inp.style.outline='';},500);return;}
@@ -364,7 +350,6 @@ function go(q){
   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
   document.querySelector('[data-t="web"]').classList.add('active');
   home.style.display='none';res.classList.add('show');
-  rl.innerHTML='';mb.style.display='none';
   document.getElementById('raib').classList.remove('show');
   doSearch(q,'web',1,false);
 }
@@ -372,29 +357,79 @@ function go(q){
 function doSearch(q,tab,page,append){
   eb.className='eb';ld.className='ld show';
   if(!append){rl.innerHTML='';rc.textContent='';}
-  fetch(surl(q,tab,page),{headers:{'Accept':'application/json'}})
-    .then(r=>{if(!r.ok)throw new Error(r.status);return r.json();})
-    .then(d=>{
-      ld.className='ld';
-      const items=d.results||[];
-      if(!items.length){
-        si++;
-        if(si<INSTANCES.length){doSearch(q,tab,page,append);return;}
-        si=0;if(!append)showErr('検索結果が見つかりませんでした。別のキーワードをお試しください。');
-        mb.style.display='none';return;
-      }
-      si=0;
-      if(!append)rc.textContent=items.length+'件以上の結果';
-      if(tab==='web'||tab==='news')renderWeb(items,tab);
-      else if(tab==='images')renderImg(items,append);
-      else renderVid(items,append);
-      mb.style.display=items.length>=10?'block':'none';
-    })
-    .catch(()=>{
-      ld.className='ld';si++;
-      if(si<INSTANCES.length){doSearch(q,tab,page,append);return;}
-      si=0;showErr('すべての検索サーバーに接続できませんでした。しばらく待ってから再試行してください。');
-    });
+
+  // DuckDuckGo Instant Answer API (CORS対応)
+  const ddgUrl='https://api.duckduckgo.com/?q='+encodeURIComponent(q)+'&format=json&no_redirect=1&no_html=1&skip_disambig=1';
+
+  if(tab==='web'){
+    fetch(ddgUrl)
+      .then(r=>r.json())
+      .then(d=>{
+        ld.className='ld';
+        rl.innerHTML='';
+        // Abstract (メイン回答)
+        if(d.AbstractText){
+          const div=document.createElement('div');div.className='ri';
+          div.innerHTML='<div class="rbread"><img class="rfav" src="https://www.google.com/s2/favicons?sz=16&domain='+host(d.AbstractURL||'duckduckgo.com')+'" alt="" onerror="this.style.display=\'none\'"><span class="rurl">'+(d.AbstractSource||host(d.AbstractURL||''))+'</span></div>'
+            +'<a class="rtit" href="'+(d.AbstractURL||'#')+'" target="_blank" rel="noopener">'+(d.Heading||q)+'</a>'
+            +'<div class="rsnip">'+d.AbstractText+'</div>';
+          rl.appendChild(div);
+        }
+        // Related topics
+        const topics=(d.RelatedTopics||[]).filter(t=>t.FirstURL&&t.Text).slice(0,10);
+        topics.forEach(t=>{
+          const div=document.createElement('div');div.className='ri';
+          const u=t.FirstURL||'';
+          div.innerHTML='<div class="rbread"><img class="rfav" src="https://www.google.com/s2/favicons?sz=16&domain='+host(u)+'" alt="" onerror="this.style.display=\'none\'"><span class="rurl">'+host(u)+'</span></div>'
+            +'<a class="rtit" href="'+u+'" target="_blank" rel="noopener">'+(t.Text.split(' - ')[0]||u)+'</a>'
+            +'<div class="rsnip">'+(t.Text||'')+'</div>';
+          rl.appendChild(div);
+        });
+        if(!d.AbstractText&&!topics.length){
+          // DuckDuckGoに結果なし→Googleへ誘導
+          showNoResult(q,tab);
+        } else {
+          rc.textContent='DuckDuckGo による検索結果';
+        }
+        mb.style.display='none';
+      })
+      .catch(()=>{ld.className='ld';showNoResult(q,tab);});
+  } else {
+    // ニュース/画像/動画はGoogleへ誘導
+    ld.className='ld';
+    showExternal(q,tab);
+  }
+}
+
+function showNoResult(q,tab){
+  rl.innerHTML='';
+  const gUrl=tabGoogleUrl(q,tab);
+  const div=document.createElement('div');
+  div.style.cssText='text-align:center;padding:2rem 1rem;';
+  div.innerHTML='<p style="color:var(--t2);font-size:14px;margin-bottom:16px;">「<strong>'+q+'</strong>」の検索結果が見つかりませんでした。</p>'
+    +'<a href="'+gUrl+'" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:8px;background:var(--blue);color:#fff;padding:10px 22px;border-radius:12px;text-decoration:none;font-size:14px;font-weight:500;">Googleで検索する <i class="fa-solid fa-arrow-up-right-from-square" style="font-size:12px"></i></a>';
+  rl.appendChild(div);
+  rc.textContent='';
+}
+
+function showExternal(q,tab){
+  rl.innerHTML='';
+  const gUrl=tabGoogleUrl(q,tab);
+  const label=tab==='news'?'ニュース':tab==='images'?'画像':'動画';
+  const div=document.createElement('div');
+  div.style.cssText='text-align:center;padding:2rem 1rem;';
+  div.innerHTML='<p style="color:var(--t2);font-size:14px;margin-bottom:16px;">「<strong>'+q+'</strong>」の'+label+'を検索</p>'
+    +'<a href="'+gUrl+'" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:8px;background:var(--blue);color:#fff;padding:10px 22px;border-radius:12px;text-decoration:none;font-size:14px;font-weight:500;">Googleで'+label+'を見る <i class="fa-solid fa-arrow-up-right-from-square" style="font-size:12px"></i></a>';
+  rl.appendChild(div);
+  rc.textContent='';
+}
+
+function tabGoogleUrl(q,tab){
+  const enc=encodeURIComponent(q);
+  if(tab==='news') return 'https://news.google.com/search?q='+enc;
+  if(tab==='images') return 'https://www.google.com/search?tbm=isch&q='+enc;
+  if(tab==='videos') return 'https://www.youtube.com/results?search_query='+enc;
+  return 'https://www.google.com/search?q='+enc;
 }
 
 function renderWeb(items,tab){
