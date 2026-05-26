@@ -358,78 +358,79 @@ function doSearch(q,tab,page,append){
   eb.className='eb';ld.className='ld show';
   if(!append){rl.innerHTML='';rc.textContent='';}
 
-  // DuckDuckGo Instant Answer API (CORS対応)
-  const ddgUrl='https://api.duckduckgo.com/?q='+encodeURIComponent(q)+'&format=json&no_redirect=1&no_html=1&skip_disambig=1';
+  const enc=encodeURIComponent(q);
+  // CORSプロキシ経由でDuckDuckGo HTML取得
+  const proxy='https://api.allorigins.win/get?url=';
+  let ddgUrl='';
+  if(tab==='web') ddgUrl='https://html.duckduckgo.com/html/?q='+enc;
+  else if(tab==='news') ddgUrl='https://html.duckduckgo.com/html/?q='+enc+'&iar=news&ia=news';
+  else if(tab==='videos') ddgUrl='https://html.duckduckgo.com/html/?q='+enc+'&iax=videos&ia=videos';
+  else { ld.className='ld'; showExternal(q,tab); return; }
 
-  if(tab==='web'){
-    fetch(ddgUrl)
-      .then(r=>r.json())
-      .then(d=>{
-        ld.className='ld';
-        rl.innerHTML='';
-        // Abstract (メイン回答)
-        if(d.AbstractText){
-          const div=document.createElement('div');div.className='ri';
-          div.innerHTML='<div class="rbread"><img class="rfav" src="https://www.google.com/s2/favicons?sz=16&domain='+host(d.AbstractURL||'duckduckgo.com')+'" alt="" onerror="this.style.display=\'none\'"><span class="rurl">'+(d.AbstractSource||host(d.AbstractURL||''))+'</span></div>'
-            +'<a class="rtit" href="'+(d.AbstractURL||'#')+'" target="_blank" rel="noopener">'+(d.Heading||q)+'</a>'
-            +'<div class="rsnip">'+d.AbstractText+'</div>';
-          rl.appendChild(div);
-        }
-        // Related topics
-        const topics=(d.RelatedTopics||[]).filter(t=>t.FirstURL&&t.Text).slice(0,10);
-        topics.forEach(t=>{
-          const div=document.createElement('div');div.className='ri';
-          const u=t.FirstURL||'';
-          div.innerHTML='<div class="rbread"><img class="rfav" src="https://www.google.com/s2/favicons?sz=16&domain='+host(u)+'" alt="" onerror="this.style.display=\'none\'"><span class="rurl">'+host(u)+'</span></div>'
-            +'<a class="rtit" href="'+u+'" target="_blank" rel="noopener">'+(t.Text.split(' - ')[0]||u)+'</a>'
-            +'<div class="rsnip">'+(t.Text||'')+'</div>';
-          rl.appendChild(div);
+  fetch(proxy+encodeURIComponent(ddgUrl))
+    .then(r=>r.json())
+    .then(d=>{
+      ld.className='ld';
+      const parser=new DOMParser();
+      const doc=parser.parseFromString(d.contents,'text/html');
+      const results=doc.querySelectorAll('.result');
+      if(!results.length){ showNoResult(q,tab); return; }
+      const items=[];
+      results.forEach(r=>{
+        const titleEl=r.querySelector('.result__title a, .result__a');
+        const snippetEl=r.querySelector('.result__snippet');
+        const urlEl=r.querySelector('.result__url');
+        if(!titleEl) return;
+        const href=titleEl.getAttribute('href')||'';
+        // DuckDuckGoのリダイレクトURLから実URLを抽出
+        let realUrl=href;
+        try{
+          const u=new URL('https://duckduckgo.com'+href);
+          realUrl=u.searchParams.get('uddg')||u.searchParams.get('u')||href;
+        }catch(e){}
+        items.push({
+          url: realUrl,
+          title: titleEl.textContent.trim(),
+          snippet: snippetEl?snippetEl.textContent.trim():'',
+          displayUrl: urlEl?urlEl.textContent.trim():host(realUrl)
         });
-        if(!d.AbstractText&&!topics.length){
-          // DuckDuckGoに結果なし→Googleへ誘導
-          showNoResult(q,tab);
-        } else {
-          rc.textContent='DuckDuckGo による検索結果';
-        }
-        mb.style.display='none';
-      })
-      .catch(()=>{ld.className='ld';showNoResult(q,tab);});
-  } else {
-    // ニュース/画像/動画はGoogleへ誘導
-    ld.className='ld';
-    showExternal(q,tab);
-  }
+      });
+      if(!items.length){ showNoResult(q,tab); return; }
+      rc.textContent=items.length+'件以上の結果';
+      renderDDG(items);
+      mb.style.display='none';
+    })
+    .catch(()=>{ ld.className='ld'; showNoResult(q,tab); });
+}
+
+function renderDDG(items){
+  items.forEach(it=>{
+    const d=document.createElement('div');d.className='ri';
+    const h=it.displayUrl||host(it.url);
+    d.innerHTML='<div class="rbread"><img class="rfav" src="https://icons.duckduckgo.com/ip3/'+host(it.url)+'.ico" alt="" onerror="this.style.display=\'none\'" style="width:15px;height:15px;border-radius:3px;"><span class="rurl">'+h+'</span></div>'
+      +'<a class="rtit" href="'+it.url+'" target="_blank" rel="noopener">'+it.title+'</a>'
+      +'<div class="rsnip">'+it.snippet+'</div>';
+    rl.appendChild(d);
+  });
 }
 
 function showNoResult(q,tab){
-  rl.innerHTML='';
-  const gUrl=tabGoogleUrl(q,tab);
+  rl.innerHTML='';rc.textContent='';
   const div=document.createElement('div');
-  div.style.cssText='text-align:center;padding:2rem 1rem;';
-  div.innerHTML='<p style="color:var(--t2);font-size:14px;margin-bottom:16px;">「<strong>'+q+'</strong>」の検索結果が見つかりませんでした。</p>'
-    +'<a href="'+gUrl+'" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:8px;background:var(--blue);color:#fff;padding:10px 22px;border-radius:12px;text-decoration:none;font-size:14px;font-weight:500;">Googleで検索する <i class="fa-solid fa-arrow-up-right-from-square" style="font-size:12px"></i></a>';
+  div.style.cssText='text-align:center;padding:2.5rem 1rem;';
+  div.innerHTML='<p style="color:var(--t2);font-size:14px;margin-bottom:16px;">「<strong>'+q+'</strong>」の結果が見つかりませんでした。</p>';
   rl.appendChild(div);
-  rc.textContent='';
 }
 
 function showExternal(q,tab){
-  rl.innerHTML='';
-  const gUrl=tabGoogleUrl(q,tab);
-  const label=tab==='news'?'ニュース':tab==='images'?'画像':'動画';
+  rl.innerHTML='';rc.textContent='';
+  const gUrl=tab==='images'?'https://duckduckgo.com/?q='+encodeURIComponent(q)+'&ia=images&iax=images':'https://duckduckgo.com/?q='+encodeURIComponent(q);
+  const label=tab==='images'?'画像':'動画';
   const div=document.createElement('div');
-  div.style.cssText='text-align:center;padding:2rem 1rem;';
+  div.style.cssText='text-align:center;padding:2.5rem 1rem;';
   div.innerHTML='<p style="color:var(--t2);font-size:14px;margin-bottom:16px;">「<strong>'+q+'</strong>」の'+label+'を検索</p>'
-    +'<a href="'+gUrl+'" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:8px;background:var(--blue);color:#fff;padding:10px 22px;border-radius:12px;text-decoration:none;font-size:14px;font-weight:500;">Googleで'+label+'を見る <i class="fa-solid fa-arrow-up-right-from-square" style="font-size:12px"></i></a>';
+    +'<a href="'+gUrl+'" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:8px;background:var(--blue);color:#fff;padding:10px 22px;border-radius:12px;text-decoration:none;font-size:14px;font-weight:500;">DuckDuckGoで見る <i class="fa-solid fa-arrow-up-right-from-square" style="font-size:12px"></i></a>';
   rl.appendChild(div);
-  rc.textContent='';
-}
-
-function tabGoogleUrl(q,tab){
-  const enc=encodeURIComponent(q);
-  if(tab==='news') return 'https://news.google.com/search?q='+enc;
-  if(tab==='images') return 'https://www.google.com/search?tbm=isch&q='+enc;
-  if(tab==='videos') return 'https://www.youtube.com/results?search_query='+enc;
-  return 'https://www.google.com/search?q='+enc;
 }
 
 function renderWeb(items,tab){
